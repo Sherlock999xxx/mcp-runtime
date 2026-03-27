@@ -60,6 +60,10 @@ func TestCLIHelpGoldens(t *testing.T) {
 		{name: "cluster_status_help", args: []string{"cluster", "status", "--help"}, golden: "mcp-runtime_cluster_status_help.golden"},
 		{name: "cluster_config_help", args: []string{"cluster", "config", "--help"}, golden: "mcp-runtime_cluster_config_help.golden"},
 		{name: "cluster_provision_help", args: []string{"cluster", "provision", "--help"}, golden: "mcp-runtime_cluster_provision_help.golden"},
+		{name: "cluster_cert_help", args: []string{"cluster", "cert", "--help"}, golden: "mcp-runtime_cluster_cert_help.golden"},
+		{name: "cluster_cert_status_help", args: []string{"cluster", "cert", "status", "--help"}, golden: "mcp-runtime_cluster_cert_status_help.golden"},
+		{name: "cluster_cert_apply_help", args: []string{"cluster", "cert", "apply", "--help"}, golden: "mcp-runtime_cluster_cert_apply_help.golden"},
+		{name: "cluster_cert_wait_help", args: []string{"cluster", "cert", "wait", "--help"}, golden: "mcp-runtime_cluster_cert_wait_help.golden"},
 	}
 
 	for _, tc := range cases {
@@ -103,6 +107,7 @@ func runCLI(t *testing.T, args ...string) []byte {
 		// #nosec G204 -- test code with trusted paths
 		buildCmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/mcp-runtime")
 		buildCmd.Dir = root
+		buildCmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(root, ".gocache"))
 		if err := buildCmd.Run(); err != nil {
 			t.Fatalf("failed to build binary: %v", err)
 		}

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1038,6 +1039,62 @@ func TestDeployRegistry(t *testing.T) {
 		err := deployRegistry(zap.NewNop(), "registry", 5000, "", "", manifestPath)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+
+	t.Run("applies image override via rendered manifest", func(t *testing.T) {
+		origKubectl := kubectlClient
+		t.Cleanup(func() { kubectlClient = origKubectl })
+		t.Setenv(registryImageOverrideEnv, "docker.io/library/mcp-runtime-registry:latest")
+
+		var applyCmd *MockCommand
+		mock := &MockExecutor{
+			CommandFunc: func(spec ExecSpec) *MockCommand {
+				cmd := &MockCommand{Args: spec.Args}
+				switch {
+				case contains(spec.Args, "kustomize"):
+					cmd.OutputData = []byte(`apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: registry
+spec:
+  template:
+    spec:
+      containers:
+      - name: registry
+        image: registry:2.8.3
+`)
+					cmd.RunFunc = func() error {
+						if cmd.StdoutW != nil {
+							_, _ = cmd.StdoutW.Write(cmd.OutputData)
+						}
+						return nil
+					}
+				case contains(spec.Args, "apply") && contains(spec.Args, "-f") && contains(spec.Args, "-"):
+					applyCmd = cmd
+				case contains(spec.Args, "get") &&
+					contains(spec.Args, "deployment") &&
+					contains(spec.Args, "jsonpath={.status.availableReplicas}"):
+					cmd.OutputData = []byte("1")
+				}
+				return cmd
+			},
+		}
+		kubectlClient = &KubectlClient{exec: mock, validators: nil}
+
+		err := deployRegistry(zap.NewNop(), "registry", 5000, "docker", "", "config/registry")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if applyCmd == nil {
+			t.Fatal("expected apply command to be used for registry image override")
+		}
+		captured, err := io.ReadAll(applyCmd.StdinR)
+		if err != nil {
+			t.Fatalf("failed to read apply stdin: %v", err)
+		}
+		if !strings.Contains(string(captured), "image: docker.io/library/mcp-runtime-registry:latest") {
+			t.Fatalf("expected overridden registry image in manifest, got: %s", string(captured))
 		}
 	})
 

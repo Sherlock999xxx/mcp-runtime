@@ -4,9 +4,9 @@ package cli
 // It handles creating, listing, viewing, and deleting MCPServer custom resources.
 
 import (
-	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -397,59 +397,7 @@ func (m *ServerManager) CreateServer(name, namespace, image, imageTag string) er
 		return wrappedErr
 	}
 
-	// Use os.CreateTemp for secure temp file creation (random suffix, no race conditions)
-	tmpFile, err := os.CreateTemp(".", "mcpserver-*.yaml")
-	if err != nil {
-		wrappedErr := wrapWithSentinelAndContext(
-			ErrCreateTempFileFailed,
-			err,
-			fmt.Sprintf("failed to create temp file: %v", err),
-			map[string]any{"server": name, "namespace": namespace, "component": "server"},
-		)
-		Error("Failed to create temp file")
-		logStructuredError(m.logger, wrappedErr, "Failed to create temp file")
-		return wrappedErr
-	}
-	tmpPath := tmpFile.Name()
-	defer os.Remove(tmpPath)
-
-	if _, err := tmpFile.Write(manifestBytes); err != nil {
-		closeErr := tmpFile.Close()
-		if closeErr != nil {
-			wrappedErr := wrapWithSentinelAndContext(
-				ErrWriteManifestFailed,
-				errors.Join(err, closeErr),
-				fmt.Sprintf("failed to write manifest: %v; failed to close temp file: %v", err, closeErr),
-				map[string]any{"server": name, "namespace": namespace, "component": "server"},
-			)
-			Error("Failed to write manifest")
-			logStructuredError(m.logger, wrappedErr, "Failed to write manifest")
-			return wrappedErr
-		}
-		wrappedErr := wrapWithSentinelAndContext(
-			ErrWriteManifestFailed,
-			err,
-			fmt.Sprintf("failed to write manifest: %v", err),
-			map[string]any{"server": name, "namespace": namespace, "component": "server"},
-		)
-		Error("Failed to write manifest")
-		logStructuredError(m.logger, wrappedErr, "Failed to write manifest")
-		return wrappedErr
-	}
-	if err := tmpFile.Close(); err != nil {
-		wrappedErr := wrapWithSentinelAndContext(
-			ErrCloseTempFileFailed,
-			err,
-			fmt.Sprintf("failed to close temp file: %v", err),
-			map[string]any{"server": name, "namespace": namespace, "component": "server"},
-		)
-		Error("Failed to close temp file")
-		logStructuredError(m.logger, wrappedErr, "Failed to close temp file")
-		return wrappedErr
-	}
-
-	// #nosec G204 -- tmpPath is from os.CreateTemp, kubectl is a fixed command.
-	if err := m.kubectl.RunWithOutput([]string{"apply", "-f", tmpPath}, os.Stdout, os.Stderr); err != nil {
+	if err := applyManifestContent(m.kubectl, string(manifestBytes)); err != nil {
 		wrappedErr := wrapWithSentinelAndContext(
 			ErrCreateServerFailed,
 			err,
@@ -481,7 +429,49 @@ func (m *ServerManager) ApplyServerFromFile(file string) error {
 
 // CreateServerFromFile creates an MCP server from a YAML file.
 func (m *ServerManager) CreateServerFromFile(file string) error {
-	return m.ApplyServerFromFile(file)
+	// Validate file path exists and is a regular file.
+	absPath, err := filepath.Abs(file)
+	if err != nil {
+		wrappedErr := wrapWithSentinel(ErrInvalidFilePath, err, fmt.Sprintf("invalid file path: %v", err))
+		Error("Invalid file path")
+		logStructuredError(m.logger, wrappedErr, "Invalid file path")
+		return wrappedErr
+	}
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		wrappedErr := wrapWithSentinel(ErrFileNotAccessible, err, fmt.Sprintf("cannot access file %q: %v", file, err))
+		Error("Cannot access file")
+		logStructuredError(m.logger, wrappedErr, "Cannot access file")
+		return wrappedErr
+	}
+	if info.IsDir() {
+		err := newWithSentinel(ErrFileIsDirectory, fmt.Sprintf("path %q is a directory, not a file", file))
+		Error("Path is a directory")
+		logStructuredError(m.logger, err, "Path is a directory")
+		return err
+	}
+
+	manifestBytes, err := os.ReadFile(absPath)
+	if err != nil {
+		wrappedErr := wrapWithSentinel(ErrFileNotAccessible, err, fmt.Sprintf("cannot read file %q: %v", file, err))
+		Error("Cannot access file")
+		logStructuredError(m.logger, wrappedErr, "Cannot access file")
+		return wrappedErr
+	}
+
+	if err := applyManifestContent(m.kubectl, string(manifestBytes)); err != nil {
+		wrappedErr := wrapWithSentinelAndContext(
+			ErrCreateServerFailed,
+			err,
+			fmt.Sprintf("failed to create server from file %q: %v", file, err),
+			map[string]any{"file": file, "component": "server"},
+		)
+		Error("Failed to create server from file")
+		logStructuredError(m.logger, wrappedErr, "Failed to create server from file")
+		return wrappedErr
+	}
+	return nil
 }
 
 // ExportServer exports an MCPServer manifest to stdout or a file.
@@ -671,7 +661,7 @@ func (m *ServerManager) ViewServerLogs(name, namespace string, follow bool) erro
 		return err
 	}
 
-	args := []string{"logs", "-l", LabelApp + "=" + name, "-n", namespace}
+	args := []string{"logs", "-l", LabelApp + "=" + name, "-n", namespace, "--all-containers=true"}
 	if follow {
 		args = append(args, "-f")
 	}

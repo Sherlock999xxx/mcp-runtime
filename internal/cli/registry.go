@@ -16,6 +16,9 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const defaultRegistryImage = "registry:2.8.3"
+const registryImageOverrideEnv = "MCP_RUNTIME_REGISTRY_IMAGE_OVERRIDE"
+
 // RegistryManager handles registry operations with injected dependencies.
 type RegistryManager struct {
 	kubectl *KubectlClient
@@ -394,17 +397,58 @@ func deployRegistry(logger *zap.Logger, namespace string, port int, registryType
 	}
 	// Apply registry manifests via kustomize with namespace override
 	logger.Info("Applying registry manifests")
-	// #nosec G204 -- manifestPath from internal config, namespace from setup flags.
-	if err := kubectlClient.RunWithOutput([]string{"apply", "-k", manifestPath, "-n", namespace}, os.Stdout, os.Stderr); err != nil {
-		wrappedErr := wrapWithSentinelAndContext(
-			ErrDeployRegistryFailed,
-			err,
-			fmt.Sprintf("failed to deploy registry: %v", err),
-			map[string]any{"namespace": namespace, "manifest_path": manifestPath, "registry_type": registryType, "component": "registry"},
-		)
-		Error("Failed to deploy registry")
-		logStructuredError(logger, wrappedErr, "Failed to deploy registry")
-		return wrappedErr
+	overrideImage := strings.TrimSpace(os.Getenv(registryImageOverrideEnv))
+	if overrideImage != "" {
+		logger.Info("Applying registry image override", zap.String("image", overrideImage))
+		manifest, err := renderKustomizeManifest(kubectlClient, manifestPath)
+		if err != nil {
+			wrappedErr := wrapWithSentinelAndContext(
+				ErrDeployRegistryFailed,
+				err,
+				fmt.Sprintf("failed to render registry manifest %q: %v", manifestPath, err),
+				map[string]any{"namespace": namespace, "manifest_path": manifestPath, "registry_type": registryType, "component": "registry"},
+			)
+			Error("Failed to render registry manifest")
+			logStructuredError(logger, wrappedErr, "Failed to render registry manifest")
+			return wrappedErr
+		}
+		updated := strings.Replace(manifest, "image: "+defaultRegistryImage, "image: "+overrideImage, 1)
+		if updated == manifest {
+			err := fmt.Errorf("registry image reference %q not found in manifest", defaultRegistryImage)
+			wrappedErr := wrapWithSentinelAndContext(
+				ErrDeployRegistryFailed,
+				err,
+				err.Error(),
+				map[string]any{"namespace": namespace, "manifest_path": manifestPath, "registry_type": registryType, "component": "registry"},
+			)
+			Error("Failed to rewrite registry image")
+			logStructuredError(logger, wrappedErr, "Failed to rewrite registry image")
+			return wrappedErr
+		}
+		if err := applyManifestContentWithNamespace(kubectlClient, updated, namespace); err != nil {
+			wrappedErr := wrapWithSentinelAndContext(
+				ErrDeployRegistryFailed,
+				err,
+				fmt.Sprintf("failed to deploy registry with image override %q: %v", overrideImage, err),
+				map[string]any{"namespace": namespace, "manifest_path": manifestPath, "registry_type": registryType, "component": "registry"},
+			)
+			Error("Failed to deploy registry")
+			logStructuredError(logger, wrappedErr, "Failed to deploy registry")
+			return wrappedErr
+		}
+	} else {
+		// #nosec G204 -- manifestPath from internal config, namespace from setup flags.
+		if err := kubectlClient.RunWithOutput([]string{"apply", "-k", manifestPath, "-n", namespace}, os.Stdout, os.Stderr); err != nil {
+			wrappedErr := wrapWithSentinelAndContext(
+				ErrDeployRegistryFailed,
+				err,
+				fmt.Sprintf("failed to deploy registry: %v", err),
+				map[string]any{"namespace": namespace, "manifest_path": manifestPath, "registry_type": registryType, "component": "registry"},
+			)
+			Error("Failed to deploy registry")
+			logStructuredError(logger, wrappedErr, "Failed to deploy registry")
+			return wrappedErr
+		}
 	}
 
 	if err := ensureRegistryStorageSize(logger, namespace, registryStorageSize); err != nil {
@@ -420,6 +464,20 @@ func deployRegistry(logger *zap.Logger, namespace string, port int, registryType
 
 	logger.Info("Registry deployed successfully")
 	return nil
+}
+
+func renderKustomizeManifest(kubectl KubectlRunner, manifestPath string) (string, error) {
+	renderCmd, err := kubectl.CommandArgs([]string{"kustomize", manifestPath})
+	if err != nil {
+		return "", err
+	}
+	var stdout, stderr bytes.Buffer
+	renderCmd.SetStdout(&stdout)
+	renderCmd.SetStderr(&stderr)
+	if err := renderCmd.Run(); err != nil {
+		return "", fmt.Errorf("kubectl kustomize %s failed: %v (%s)", manifestPath, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
 }
 
 func ensureRegistryStorageSize(logger *zap.Logger, namespace, registryStorageSize string) error {

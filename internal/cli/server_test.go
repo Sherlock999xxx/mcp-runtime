@@ -3,8 +3,8 @@ package cli
 import (
 	"bytes"
 	"errors"
+	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -213,31 +213,20 @@ func TestServerManager_CreateServer(t *testing.T) {
 	})
 
 	t.Run("creates manifest and applies via kubectl", func(t *testing.T) {
-		var captured []byte
+		var applyCmd *MockCommand
 		mockExec := &MockExecutor{
 			CommandFunc: func(spec ExecSpec) *MockCommand {
-				return &MockCommand{
-					Args: spec.Args,
-					RunFunc: func() error {
-						for i, arg := range spec.Args {
-							if arg == "-f" && i+1 < len(spec.Args) {
-								data, err := os.ReadFile(spec.Args[i+1])
-								if err != nil {
-									return err
-								}
-								captured = data
-								break
-							}
-						}
-						return nil
-					},
-				}
+				applyCmd = &MockCommand{Args: spec.Args}
+				return applyCmd
 			},
 		}
-		kubectl := &KubectlClient{exec: mockExec, validators: nil}
+		kubectl, err := NewKubectlClient(mockExec)
+		if err != nil {
+			t.Fatalf("failed to create kubectl client: %v", err)
+		}
 		mgr := NewServerManager(kubectl, zap.NewNop())
 
-		err := mgr.CreateServer("my-server", "test-ns", "repo/image", "v1")
+		err = mgr.CreateServer("my-server", "test-ns", "repo/image", "v1")
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -248,8 +237,12 @@ func TestServerManager_CreateServer(t *testing.T) {
 		if cmd.Name != "kubectl" {
 			t.Errorf("expected kubectl, got %s", cmd.Name)
 		}
-		if !contains(cmd.Args, "apply") || !contains(cmd.Args, "-f") {
+		if !contains(cmd.Args, "apply") || !contains(cmd.Args, "-f") || !contains(cmd.Args, "-") {
 			t.Errorf("expected apply -f args, got %v", cmd.Args)
+		}
+		captured, err := io.ReadAll(applyCmd.StdinR)
+		if err != nil {
+			t.Fatalf("failed to read manifest from stdin: %v", err)
 		}
 
 		var manifest mcpServerManifest
@@ -301,9 +294,18 @@ func TestServerManager_CreateServerFromFile(t *testing.T) {
 		}
 	})
 
-	t.Run("applies file via kubectl with absolute path", func(t *testing.T) {
-		mock := &MockExecutor{}
-		kubectl := &KubectlClient{exec: mock, validators: nil}
+	t.Run("applies file via kubectl stdin with default validators", func(t *testing.T) {
+		var applyCmd *MockCommand
+		mock := &MockExecutor{
+			CommandFunc: func(spec ExecSpec) *MockCommand {
+				applyCmd = &MockCommand{Args: spec.Args}
+				return applyCmd
+			},
+		}
+		kubectl, err := NewKubectlClient(mock)
+		if err != nil {
+			t.Fatalf("failed to create kubectl client: %v", err)
+		}
 		mgr := NewServerManager(kubectl, zap.NewNop())
 
 		tmpFile, err := os.CreateTemp("", "mcpserver-test-*.yaml")
@@ -327,12 +329,15 @@ func TestServerManager_CreateServerFromFile(t *testing.T) {
 		if cmd.Name != "kubectl" {
 			t.Errorf("expected kubectl, got %s", cmd.Name)
 		}
-		absPath, err := filepath.Abs(tmpFile.Name())
-		if err != nil {
-			t.Fatalf("failed to abs temp file path: %v", err)
+		if !contains(cmd.Args, "apply") || !contains(cmd.Args, "-f") || !contains(cmd.Args, "-") {
+			t.Errorf("expected apply -f - args, got %v", cmd.Args)
 		}
-		if !contains(cmd.Args, "apply") || !contains(cmd.Args, "-f") || !contains(cmd.Args, absPath) {
-			t.Errorf("expected apply -f %s, got %v", absPath, cmd.Args)
+		captured, err := io.ReadAll(applyCmd.StdinR)
+		if err != nil {
+			t.Fatalf("failed to read manifest from stdin: %v", err)
+		}
+		if string(captured) != "apiVersion: v1\nkind: Namespace\n" {
+			t.Fatalf("unexpected manifest contents: %q", string(captured))
 		}
 	})
 }
@@ -494,6 +499,9 @@ func TestServerCmdSubcommandRunE(t *testing.T) {
 		err := cmd.RunE(cmd, []string{"my-server"})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
+		}
+		if !contains(mock.LastCommand().Args, "--all-containers=true") {
+			t.Fatalf("expected logs command to include --all-containers=true, got %v", mock.LastCommand().Args)
 		}
 	})
 

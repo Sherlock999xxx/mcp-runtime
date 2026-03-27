@@ -1,0 +1,17 @@
+Manage cert-manager resources required for TLS in the MCP platform
+
+Usage:
+  mcp-runtime cluster cert [command]
+
+Available Commands:
+  apply       Apply cert-manager resources
+  status      Check cert-manager resources
+  wait        Wait for registry certificate readiness
+
+Flags:
+  -h, --help   help for cert
+
+Global Flags:
+      --debug   Enable debug mode with structured error logging
+
+Use "mcp-runtime cluster cert [command] --help" for more information about a command.

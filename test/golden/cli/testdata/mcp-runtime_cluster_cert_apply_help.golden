@@ -1,0 +1,10 @@
+Apply ClusterIssuer and registry Certificate manifests
+
+Usage:
+  mcp-runtime cluster cert apply [flags]
+
+Flags:
+  -h, --help   help for apply
+
+Global Flags:
+      --debug   Enable debug mode with structured error logging

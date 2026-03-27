@@ -1,0 +1,11 @@
+Wait for the registry certificate to reach Ready state
+
+Usage:
+  mcp-runtime cluster cert wait [flags]
+
+Flags:
+  -h, --help               help for wait
+      --timeout duration   Timeout for certificate readiness (default from MCP_CERT_TIMEOUT)
+
+Global Flags:
+      --debug   Enable debug mode with structured error logging

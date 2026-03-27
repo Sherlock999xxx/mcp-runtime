@@ -1,0 +1,10 @@
+Check cert-manager installation, CA secret, issuer, and registry certificate
+
+Usage:
+  mcp-runtime cluster cert status [flags]
+
+Flags:
+  -h, --help   help for status
+
+Global Flags:
+      --debug   Enable debug mode with structured error logging
